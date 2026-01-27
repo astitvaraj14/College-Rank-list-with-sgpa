@@ -3,5 +3,4 @@ selenium
 beautifulsoup4
 pymongo
 gunicorn
-webdriver-manager
 urllib3==1.26.15
