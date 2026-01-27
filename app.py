@@ -3,6 +3,7 @@ from flask import Flask, render_template, request, jsonify
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -13,7 +14,7 @@ app = Flask(__name__)
 app.secret_key = 'vtu_final_secret'
 
 # --- DATABASE ---
-# Use an Environment Variable for DB URL if available (for production), else localhost
+# Uses Render's Environment Variable if available, otherwise Localhost
 MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://127.0.0.1:27017/')
 client = MongoClient(MONGO_URI)
 db = client['university_db']
@@ -30,14 +31,21 @@ def init_driver():
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
         
         # --- SMART DRIVER SETUP ---
-        # If we are on Render/Linux (Docker), use the specific Chrome path.
-        # If we are on Mac (Local), let Selenium find it automatically.
-        if os.path.exists("/usr/bin/google-chrome"):
-            chrome_options.binary_location = "/usr/bin/google-chrome"
-
-        driver = webdriver.Chrome(options=chrome_options)
+        # Scenario 1: Running on Render (Docker) -> Use Chromium
+        if os.path.exists("/usr/bin/chromium"):
+            chrome_options.binary_location = "/usr/bin/chromium"
+            # We explicitly tell Selenium where the driver is
+            service = Service("/usr/bin/chromedriver")
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            print("Launched Chromium (Docker/Render Mode)")
+            
+        # Scenario 2: Running on Mac/Local -> Use Default
+        else:
+            driver = webdriver.Chrome(options=chrome_options)
+            print("Launched Chrome (Local Mode)")
 
 @app.route('/')
 def home():
@@ -59,7 +67,7 @@ def get_captcha():
         return captcha_img.screenshot_as_png, 200, {'Content-Type': 'image/jpeg'}
     except Exception as e:
         print(f"Browser Error: {e}")
-        # Reset driver if it crashes
+        # Force a restart of the driver on next try
         if driver:
             try: driver.quit()
             except: pass
@@ -70,12 +78,9 @@ def get_captcha():
 @app.route('/leaderboard')
 def get_leaderboard():
     try:
-        # Sort by Total Marks (Descending) -> Limit 100
         top_students = list(students_col.find({}, {'_id': 0, 'usn': 1, 'name': 1, 'total_marks': 1, 'sgpa': 1}).sort('total_marks', -1).limit(100))
-        
         for index, student in enumerate(top_students):
             student['rank'] = index + 1
-            
         return jsonify({'status': 'success', 'data': top_students})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
@@ -87,7 +92,6 @@ def fetch_result():
 
     try:
         if not driver:
-            # Try to re-init if session was lost
             init_driver()
             if not driver:
                 return jsonify({'status': 'error', 'message': 'Session expired. Refresh page.'})
@@ -122,10 +126,8 @@ def fetch_result():
         if student_data['name'] != "Unknown":
             students_col.update_one({'usn': usn}, {'$set': student_data}, upsert=True)
             
-            # --- RANK LOGIC (BY TOTAL MARKS) ---
             my_total = student_data.get('total_marks', 0)
             uni_rank = students_col.count_documents({'total_marks': {'$gt': my_total}}) + 1
-            
             coll_code = usn[:3]
             coll_rank = students_col.count_documents({
                 'total_marks': {'$gt': my_total},
@@ -150,7 +152,7 @@ def fetch_result():
 
 def get_credits_2022_cs_5th(sub_code):
     code = sub_code.upper().strip()
-    if "BCS501" in code: return 3  
+    if "BCS501" in code: return 4  
     if "BCS502" in code: return 4  
     if "BCS503" in code: return 4  
     if "BCSL504" in code: return 1 
@@ -176,7 +178,6 @@ def calculate_grade_point(marks):
 
 def parse_result_page(soup, usn):
     data = {'usn': usn, 'name': "Unknown", 'sgpa': "0.00", 'sgpa_float': 0.0, 'total_marks': 0, 'subjects': []}
-    
     try:
         all_text = list(soup.stripped_strings)
         for i, text in enumerate(all_text):
@@ -208,7 +209,6 @@ def parse_result_page(soup, usn):
                         total_gp += (credits * gp)
                     
                     running_total_marks += int(marks)
-
                     data['subjects'].append({
                         'code': code,
                         'name': cells[1].text.strip(),
@@ -218,16 +218,13 @@ def parse_result_page(soup, usn):
                 except: continue
         
         data['total_marks'] = running_total_marks
-
         if total_credits > 0:
             sgpa_val = total_gp / total_credits
             data['sgpa'] = "{:.2f}".format(sgpa_val)
             data['sgpa_float'] = float(sgpa_val)
-
     except Exception as e: print(e)
     return data
 
 if __name__ == '__main__':
-    # Use environment variable for port (Render uses $PORT)
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port, debug=True)

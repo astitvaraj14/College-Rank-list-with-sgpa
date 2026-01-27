@@ -1,35 +1,29 @@
-# Use Python 3.9
+# Use Python 3.9 Slim (Lightweight)
 FROM python:3.9-slim
 
-# 1. Install basic tools
+# 1. Install Chromium and Chromedriver
+# This installs the browser AND the driver automatically
 RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-driver \
     wget \
-    gnupg \
-    unzip \
-    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Install Google Chrome (Direct Download Method)
-# This bypasses the "apt-key not found" error
-RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
-    && apt-get update \
-    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
-    && rm google-chrome-stable_current_amd64.deb \
-    && apt-get clean
-
-# 3. Set Working Directory
+# 2. Set Working Directory
 WORKDIR /app
 
-# 4. Install Python Dependencies
+# 3. Copy Requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Copy App Files
+# 4. Copy App Files
 COPY . .
 
-# 6. Set Environment Variables
-ENV CHROME_BIN=/usr/bin/google-chrome
+# 5. Set Environment Variables for Selenium
+# Tell Python where Chromium lives
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 ENV PORT=10000
 
-# 7. Start the App
+# 6. Start the App
 CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000", "--timeout", "120"]
