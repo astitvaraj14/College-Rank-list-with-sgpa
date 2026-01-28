@@ -12,26 +12,27 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# --- 1. CLEANUP (Kill old browsers) ---
-print("🧹 Cleaning up old processes...")
-subprocess.run(["pkill", "-f", "Google Chrome"], check=False)
-subprocess.run(["pkill", "-f", "chromedriver"], check=False)
+# --- CLEANUP ---
+try:
+    subprocess.run(["pkill", "-f", "chromedriver"], check=False)
+except: pass
 
 app = Flask(__name__)
 app.secret_key = 'vtu_final_secret'
 
-# --- 2. DATABASE CHECK ---
+# --- DATABASE CONNECTION (THE FIX) ---
+# This line checks if there is a Cloud URL. If not, it uses Localhost.
+MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://127.0.0.1:27017/')
+
 try:
-    client = MongoClient('mongodb://127.0.0.1:27017/', serverSelectionTimeoutMS=2000)
-    client.server_info() # Trigger connection to check if running
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    client.server_info() # Test connection immediately
     db = client['university_db']
     students_col = db['students']
-    print("✅ MongoDB is Connected!")
-except:
-    print("❌ MONGODB ERROR: Database is not running!")
-    print("👉 Run: brew services start mongodb-community")
+    print(f"✅ Connected to Database: {'Cloud Atlas' if 'mongodb.net' in MONGO_URI else 'Localhost'}")
+except Exception as e:
+    print(f"❌ DATABASE ERROR: {e}")
 
-# --- BROWSER ---
 driver = None
 
 def init_driver():
@@ -39,18 +40,12 @@ def init_driver():
     if driver is None:
         print("🔵 Initializing Browser...")
         chrome_options = Options()
-        
-        # INVISIBLE MODE SETTINGS
         chrome_options.add_argument("--headless=new") 
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--remote-debugging-port=9222")
-        
-        # CRITICAL FIX: Allow Popups in Headless Mode
         chrome_options.add_argument("--disable-popup-blocking")
         
-        # Temp profile for stability
         user_data_dir = tempfile.mkdtemp()
         chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
         
@@ -66,17 +61,14 @@ def get_captcha():
     global driver
     try:
         if driver is None: init_driver()
-
-        print("🔄 Loading VTU Page...")
         try:
             if "results.vtu.ac.in" not in driver.current_url:
                  driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
             else:
                  driver.refresh()
         except:
-            if driver: 
-                try: driver.quit()
-                except: pass
+            if driver: try: driver.quit() 
+            except: pass
             driver = None
             init_driver()
             driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
@@ -85,16 +77,9 @@ def get_captcha():
         captcha_img = wait.until(EC.presence_of_element_located((By.XPATH, "//img[contains(@src, 'captcha')]")))
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", captcha_img)
         time.sleep(1) 
-        
-        print("📸 Captcha Sent")
         return captcha_img.screenshot_as_png, 200, {'Content-Type': 'image/jpeg'}
-
     except Exception as e:
         print(f"❌ Captcha Error: {e}")
-        if driver:
-            try: driver.quit()
-            except: pass
-            driver = None
         return "Browser Error", 500
 
 @app.route('/leaderboard')
@@ -113,18 +98,13 @@ def fetch_result():
     captcha_text = request.form['captcha'].strip()
     try:
         if not driver: init_driver()
-
-        # 1. Fill Form
         driver.find_element(By.NAME, "lns").clear()
         driver.find_element(By.NAME, "lns").send_keys(usn)
         driver.find_element(By.NAME, "captchacode").clear()
         driver.find_element(By.NAME, "captchacode").send_keys(captcha_text)
-        
-        # 2. Click Submit
         driver.find_element(By.XPATH, "//input[@type='submit']").click()
         time.sleep(2)
 
-        # 3. Handle Alerts
         try:
             alert = driver.switch_to.alert
             txt = alert.text
@@ -133,15 +113,14 @@ def fetch_result():
             if "not available" in txt: return jsonify({'status': 'error', 'message': 'Result Not Found'})
         except: pass
 
-        # 4. Handle Popups (CRITICAL FIX)
         if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
 
-        # 5. Parse Data
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         student_data = parse_result_page(soup, usn)
         
         if student_data['name'] != "Unknown":
+            # THIS IS WHERE IT WAS FAILING (Saving to DB)
             students_col.update_one({'usn': usn}, {'$set': student_data}, upsert=True)
             
             my_total = student_data.get('total_marks', 0)
@@ -152,7 +131,6 @@ def fetch_result():
                 'usn': {'$regex': f'^{coll_code}'}
             }) + 1
 
-            # Close popup
             if len(driver.window_handles) > 1:
                 driver.close()
                 driver.switch_to.window(driver.window_handles[0])
@@ -166,8 +144,8 @@ def fetch_result():
             return jsonify({'status': 'error', 'message': 'Parsing Failed'})
 
     except Exception as e:
-        print(f"❌ Server Error Details: {e}") # CHECK TERMINAL FOR THIS
-        return jsonify({'status': 'error', 'message': 'Server Error'})
+        # I updated this to print the REAL error to your browser
+        return jsonify({'status': 'error', 'message': f'Server Error: {str(e)}'})
 
 def get_credits_2022_cs_5th(sub_code):
     code = sub_code.upper().strip()
@@ -208,12 +186,10 @@ def parse_result_page(soup, usn):
                 elif len(all_text[i+1]) > 3:
                      data['name'] = all_text[i+1].replace(":", "").strip()
                      break
-
         div_rows = soup.find_all('div', class_='divTableRow')
         total_credits = 0
         total_gp = 0
         running_total_marks = 0 
-        
         for row in div_rows:
             cells = row.find_all('div', class_='divTableCell')
             if len(cells) >= 6:
@@ -233,7 +209,6 @@ def parse_result_page(soup, usn):
                         'result': cells[5].text.strip()
                     })
                 except: continue
-        
         data['total_marks'] = running_total_marks
         if total_credits > 0:
             sgpa_val = total_gp / total_credits
