@@ -137,85 +137,98 @@
         document.getElementById('captcha-img').src = "/get_captcha?" + new Date().getTime();
     }
     window.onload = loadCaptcha;
-
+    
     // Fetch Result Logic
     document.getElementById('resultForm').addEventListener('submit', async function(e) {
         e.preventDefault();
         const btn = document.querySelector('button');
         const resultSection = document.getElementById('result-section');
         const status = document.getElementById('status-msg');
-        
+    
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
+        btn.innerHTML = 'Fetching...';
         status.innerText = "";
         resultSection.style.display = "none";
-
+    
         try {
             const response = await fetch('/fetch_result', { method: 'POST', body: new FormData(this) });
             const data = await response.json();
-
+    
             if (data.status === 'success') {
                 document.getElementById('student-name').innerText = "Hello, " + data.data.name;
                 document.getElementById('sgpa-display').innerText = data.data.sgpa;
                 document.getElementById('total-marks-display').innerText = data.data.total_marks;
                 document.getElementById('rank-display').innerText = "#" + data.ranks.uni_rank;
-                
+    
                 const tbody = document.getElementById('marks-body');
                 tbody.innerHTML = "";
                 data.data.subjects.forEach(sub => {
                     tbody.innerHTML += `
-                        <tr>
-                            <td class="fw-bold text-secondary">${sub.code}</td>
-                            <td>${sub.name}</td>
-                            <td class="fw-bold">${sub.total}</td>
-                            <td class="${sub.result === 'P' ? 'pass' : 'fail'}">${sub.result}</td>
-                        </tr>
-                    `;
+                    <tr>
+                        <td>${sub.code}</td>
+                        <td>${sub.name}</td>
+                        <td>${sub.total}</td>
+                        <td>${sub.result}</td>
+                    </tr>`;
                 });
+    
                 resultSection.style.display = "block";
             } else {
                 status.innerText = data.message;
                 loadCaptcha();
             }
-        } catch (err) { status.innerText = "Connection Error"; }
-        
+        } catch {
+            status.innerText = "Connection Error";
+        }
+    
         btn.disabled = false;
-        btn.innerText = "GET RESULT";
+        btn.innerHTML = "GET RESULT";
     });
-
-    // Fetch Leaderboard Logic
+    
+    // ✅ FIXED Leaderboard Logic
     async function fetchLeaderboard() {
         try {
             const response = await fetch('/leaderboard');
             const result = await response.json();
-            
+    
             const tbody = document.getElementById('leaderboard-body');
             tbody.innerHTML = "";
-            
-            if (result.status === 'success' && result.data.length > 0) {
-                result.data.forEach(student => {
-                    let rowClass = "";
-                    if (student.rank === 1) rowClass = "rank-1";
-                    else if (student.rank === 2) rowClass = "rank-2";
-                    else if (student.rank === 3) rowClass = "rank-3";
-
-                    tbody.innerHTML += `
-                        <tr class="${rowClass}">
-                            <td class="fw-bold">#${student.rank}</td>
-                            <td>${student.usn}</td>
-                            <td>${student.name}</td>
-                            <td class="fw-bold">${student.total_marks}</td>
-                            <td>${student.sgpa}</td>
-                        </tr>
-                    `;
-                });
-            } else {
-                tbody.innerHTML = "<tr><td colspan='5'>No records found yet. Check some results first!</td></tr>";
+    
+            // Handle both API formats
+            let students = [];
+    
+            if (Array.isArray(result)) {
+                students = result;                 // format: [...]
+            } else if (result.status === 'success') {
+                students = result.data;            // format: {status,data}
             }
+    
+            if (students.length === 0) {
+                tbody.innerHTML = "<tr><td colspan='5'>No records found yet.</td></tr>";
+                return;
+            }
+    
+            students.forEach(student => {
+                let rowClass = "";
+                if (student.rank === 1) rowClass = "rank-1";
+                else if (student.rank === 2) rowClass = "rank-2";
+                else if (student.rank === 3) rowClass = "rank-3";
+    
+                tbody.innerHTML += `
+                <tr class="${rowClass}">
+                    <td>#${student.rank}</td>
+                    <td>${student.usn}</td>
+                    <td>${student.name}</td>
+                    <td>${student.total_marks}</td>
+                    <td>${student.sgpa || "-"}</td>
+                </tr>`;
+            });
+    
         } catch (e) {
-            console.error(e);
+            console.error("Leaderboard error:", e);
         }
     }
-</script>
+    </script>
+    
 </body>
 </html>

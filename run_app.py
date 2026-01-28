@@ -20,23 +20,17 @@ def leaderboard():
         s["rank"] = i+1
     return jsonify(data)
 
-@app.route("/submit_result", methods=["POST"])
-def submit_result():
-    data = request.get_json(force=True)
-    print("📥 RECEIVED DATA:", data)   # <-- ADD THIS
+@app.route("/leaderboard")
+def leaderboard():
+    students = list(students_col.find({}, {"_id": 0}))
+    students.sort(key=lambda x: x.get("total_marks", 0), reverse=True)
 
-    if not data:
-        return jsonify({"status":"error","message":"No JSON received"})
+    # add rank
+    for i, s in enumerate(students):
+        s["rank"] = i + 1
 
-    usn = data.get("usn")
+    return jsonify(students)
 
-    students_col.update_one(
-        {"usn": usn},
-        {"$set": data},
-        upsert=True
-    )
-
-    return jsonify({"status":"success"})
 
 
 if __name__ == "__main__":
