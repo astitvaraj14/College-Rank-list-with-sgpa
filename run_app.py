@@ -1,6 +1,7 @@
 import os
 import time
 import tempfile
+import shutil
 import subprocess
 from flask import Flask, render_template, request, jsonify
 from bs4 import BeautifulSoup
@@ -10,165 +11,250 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import UnexpectedAlertPresentException, NoAlertPresentException
 
-# --- 1. CLEANUP ---
+# --- CLEANUP ---
 try:
     subprocess.run(["pkill", "-f", "chromedriver"], check=False)
-except: pass
+except: 
+    pass
 
 app = Flask(__name__)
 app.secret_key = 'vtu_final_secret'
 
-# --- 2. DATABASE CONNECTION ---
+# --- DATABASE CONNECTION ---
 MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://127.0.0.1:27017/')
+
+# Initialize variables globally
 db = None
 students_col = None
+db_connected = False
 
 def connect_db():
-    global db, students_col
+    """Attempt to connect to MongoDB with better error handling"""
+    global db, students_col, db_connected
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        client.admin.command('ping') 
+        print(f"🔄 Attempting to connect to MongoDB...")
+        print(f"📍 Using URI: {MONGO_URI[:20]}...")  # Only show first 20 chars for security
+        
+        # Use a 10-second timeout
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+        
+        # Test the connection
+        client.admin.command('ping')
+        
+        # If successful, set up database and collection
         db = client['university_db']
         students_col = db['students']
-        print("✅ Database Connected Successfully")
+        db_connected = True
+        
+        print(f"✅ Database Connected Successfully!")
+        print(f"📊 Database: university_db, Collection: students")
         return True
+        
     except Exception as e:
-        print(f"❌ DATABASE CONNECTION FAILED: {e}")
+        db_connected = False
+        print(f"❌ DATABASE CONNECTION FAILED!")
+        print(f"❌ Error Type: {type(e).__name__}")
+        print(f"❌ Error Details: {str(e)}")
+        print(f"⚠️  App will run but database features will be disabled")
         return False
 
+# Attempt connection on startup
 connect_db()
 
-# --- 3. BROWSER INITIALIZATION ---
+# --- BROWSER ---
 driver = None
 
 def init_driver():
+    """Initialize Chrome WebDriver with headless configuration"""
     global driver
     if driver is None:
+        print("🔵 Initializing Invisible Browser...")
         chrome_options = Options()
         chrome_options.add_argument("--headless=new") 
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--window-size=1920,1080")
-        
-        # --- CRITICAL FIX: Force Allow Popups via Prefs ---
-        # This tells Chrome explicitly "Allow popups from all sites"
-        prefs = {"profile.default_content_setting_values.popups": 1}
-        chrome_options.add_experimental_option("prefs", prefs)
         chrome_options.add_argument("--disable-popup-blocking")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--disable-software-rasterizer")
         
-        if os.environ.get('CHROME_BIN'):
-            chrome_options.binary_location = os.environ.get('CHROME_BIN')
-            
         user_data_dir = tempfile.mkdtemp()
         chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
         
         driver = webdriver.Chrome(options=chrome_options)
-        print("✅ Browser Initialized with Popups Forced Allowed")
+        print("✅ Browser Started Successfully")
 
-# --- 4. ROUTES ---
-
-@app.route("/")
+@app.route('/')
 def home():
-    return render_template("index.html")
+    """Render the main page"""
+    return render_template('index.html')
 
 @app.route('/get_captcha')
 def get_captcha():
+    """Fetch and return the captcha image from VTU website"""
     global driver
     try:
-        if driver is None: init_driver()
-        driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
+        if driver is None: 
+            init_driver()
+            
+        try:
+            if "results.vtu.ac.in" not in driver.current_url:
+                driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
+            else:
+                driver.refresh()
+        except:
+            # If navigation fails, restart driver
+            if driver: 
+                try: 
+                    driver.quit() 
+                except: 
+                    pass
+            driver = None
+            init_driver()
+            driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
+        
         wait = WebDriverWait(driver, 15)
         captcha_img = wait.until(EC.presence_of_element_located((By.XPATH, "//img[contains(@src, 'captcha')]")))
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", captcha_img)
+        time.sleep(1) 
+        
         return captcha_img.screenshot_as_png, 200, {'Content-Type': 'image/jpeg'}
+        
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        print(f"❌ Captcha Error: {e}")
+        return "Browser Error", 500
+
+@app.route('/leaderboard')
+def get_leaderboard():
+    """Return the top 100 students by total marks"""
+    global students_col, db_connected
+    
+    # Check if database is connected
+    if not db_connected or students_col is None:
+        # Try to reconnect
+        if not connect_db():
+            return jsonify({
+                'status': 'error', 
+                'message': 'Database connection unavailable. Please check your MongoDB URI in environment variables.'
+            })
+    
+    try:
+        # Fetch top 100 students
+        top_students = list(
+            students_col.find(
+                {}, 
+                {'_id': 0, 'usn': 1, 'name': 1, 'total_marks': 1, 'sgpa': 1}
+            ).sort('total_marks', -1).limit(100)
+        )
+        
+        # Add rank numbers
+        for index, student in enumerate(top_students):
+            student['rank'] = index + 1
+            
+        return jsonify({'status': 'success', 'data': top_students})
+        
+    except Exception as e:
+        print(f"❌ Leaderboard Error: {e}")
+        return jsonify({
+            'status': 'error', 
+            'message': f'Failed to fetch leaderboard: {str(e)}'
+        })
 
 @app.route('/fetch_result', methods=['POST'])
 def fetch_result():
-    global students_col, driver
-    if students_col is None: connect_db()
+    """Fetch student result from VTU website and store in database"""
+    global students_col, db_connected
     
-    usn = request.form.get('usn', '').strip().upper()
-    captcha_text = request.form.get('captcha', '').strip()
-
+    # Check database connection
+    if not db_connected or students_col is None:
+        # Try to reconnect
+        if not connect_db():
+            return jsonify({
+                'status': 'error', 
+                'message': 'Database connection failed. Results cannot be saved. Please check MongoDB configuration.'
+            })
+    
+    usn = request.form['usn'].strip().upper()
+    captcha_text = request.form['captcha'].strip()
+    
     try:
-        if driver is None: init_driver()
+        # Initialize browser if needed
+        if not driver: 
+            init_driver()
         
-        # 1. Fill Form
+        # Fill in the form
         driver.find_element(By.NAME, "lns").clear()
         driver.find_element(By.NAME, "lns").send_keys(usn)
         driver.find_element(By.NAME, "captchacode").clear()
         driver.find_element(By.NAME, "captchacode").send_keys(captcha_text)
-        
-        # --- FIX 2: Hard Click via JavaScript ---
-        # This bypasses any overlay that might block a normal click
-        submit_btn = driver.find_element(By.XPATH, "//input[@type='submit']")
-        driver.execute_script("arguments[0].click();", submit_btn)
-        
-        # 2. Check for "Invalid Captcha" Alert
+        driver.find_element(By.XPATH, "//input[@type='submit']").click()
+        time.sleep(2)
+
+        # Check for alerts
         try:
-            WebDriverWait(driver, 3).until(EC.alert_is_present())
             alert = driver.switch_to.alert
-            alert_text = alert.text
+            txt = alert.text
             alert.accept()
-            return jsonify({'status': 'error', 'message': f"VTU Says: {alert_text}"})
-        except:
+            if "Invalid captcha" in txt: 
+                return jsonify({'status': 'error', 'message': 'Invalid Captcha'})
+            if "not available" in txt: 
+                return jsonify({'status': 'error', 'message': 'Result Not Found'})
+        except: 
             pass
 
-        # 3. Handle Result Window (Wait for popup)
-        try:
-            # Wait up to 20 seconds for the new window to appear
-            WebDriverWait(driver, 20).until(lambda d: len(d.window_handles) > 1)
+        # Switch to result window if new window opened
+        if len(driver.window_handles) > 1:
             driver.switch_to.window(driver.window_handles[-1])
-        except:
-            print(f"DEBUG: Popup failed. Current URL: {driver.current_url}")
-            return jsonify({'status': 'error', 'message': 'Result window did not open. Please try again.'})
 
-        # 4. Parse Content
+        # Parse the result page
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         student_data = parse_result_page(soup, usn)
         
-        # 5. Close Result Window & Return
-        if len(driver.window_handles) > 1:
-            driver.close()
-            driver.switch_to.window(driver.window_handles[0])
-        
         if student_data['name'] != "Unknown":
-            students_col.update_one({'usn': usn}, {'$set': student_data}, upsert=True)
-            return jsonify({'status': 'success', 'data': student_data})
-        else:
-            return jsonify({'status': 'error', 'message': 'Parsed name is Unknown. Result format might have changed.'})
+            # Save to Database
+            try:
+                students_col.update_one(
+                    {'usn': usn}, 
+                    {'$set': student_data}, 
+                    upsert=True
+                )
+                
+                # Calculate ranks
+                my_total = student_data.get('total_marks', 0)
+                uni_rank = students_col.count_documents({'total_marks': {'$gt': my_total}}) + 1
+                
+                coll_code = usn[:3]
+                coll_rank = students_col.count_documents({
+                    'total_marks': {'$gt': my_total},
+                    'usn': {'$regex': f'^{coll_code}'}
+                }) + 1
+                
+            except Exception as db_error:
+                print(f"⚠️  Database save failed: {db_error}")
+                # Still return result even if database save fails
+                uni_rank = "N/A"
+                coll_rank = "N/A"
 
-    except UnexpectedAlertPresentException:
-        try:
-            alert = driver.switch_to.alert
-            alert.accept()
-        except: pass
-        return jsonify({'status': 'error', 'message': 'Invalid Captcha or Session Timeout'})
+            # Close extra window if opened
+            if len(driver.window_handles) > 1:
+                driver.close()
+                driver.switch_to.window(driver.window_handles[0])
             
-    except Exception as e:
-        if driver:
-            try: driver.quit()
-            except: pass
-            driver = None
-        return jsonify({'status': 'error', 'message': 'System Error. Please reload and try again.'})
+            return jsonify({
+                'status': 'success', 
+                'data': student_data,
+                'ranks': {'uni_rank': uni_rank, 'coll_rank': coll_rank}
+            })
+        else:
+            return jsonify({'status': 'error', 'message': 'Could not parse result page'})
 
-@app.route('/leaderboard')
-def leaderboard():
-    global students_col
-    if students_col is None: connect_db()
-    try:
-        students = list(students_col.find({}, {'_id': 0}).sort('total_marks', -1).limit(100))
-        for i, s in enumerate(students):
-            s['rank'] = i + 1
-        return jsonify({"status": "success", "data": students})
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
+        print(f"❌ Fetch Result Error: {e}")
+        return jsonify({'status': 'error', 'message': f'Server Error: {str(e)}'})
 
-# --- 5. PARSING HELPER ---
 def get_credits_2022_cs_5th(sub_code):
+    """Return credits for a given subject code"""
     code = sub_code.upper().strip()
     if "BCS501" in code: return 3  
     if "BCS502" in code: return 4  
@@ -181,6 +267,7 @@ def get_credits_2022_cs_5th(sub_code):
     return 0 
 
 def calculate_grade_point(marks):
+    """Convert marks to grade points"""
     try:
         m = int(marks)
         if 90 <= m <= 100: return 10
@@ -195,8 +282,18 @@ def calculate_grade_point(marks):
         return 0
 
 def parse_result_page(soup, usn):
-    data = {'usn': usn, 'name': "Unknown", 'sgpa': "0.00", 'sgpa_float': 0.0, 'total_marks': 0, 'subjects': []}
+    """Parse the VTU result page and extract student data"""
+    data = {
+        'usn': usn, 
+        'name': "Unknown", 
+        'sgpa': "0.00", 
+        'sgpa_float': 0.0, 
+        'total_marks': 0, 
+        'subjects': []
+    }
+    
     try:
+        # Extract student name
         all_text = list(soup.stripped_strings)
         for i, text in enumerate(all_text):
             if "Student Name" in text and i+3 < len(all_text):
@@ -205,9 +302,10 @@ def parse_result_page(soup, usn):
                     data['name'] = candidate
                     break
                 elif len(all_text[i+1]) > 3:
-                     data['name'] = all_text[i+1].replace(":", "").strip()
-                     break
-
+                    data['name'] = all_text[i+1].replace(":", "").strip()
+                    break
+        
+        # Extract subject marks
         div_rows = soup.find_all('div', class_='divTableRow')
         total_credits = 0
         total_gp = 0
@@ -221,26 +319,52 @@ def parse_result_page(soup, usn):
                     marks = cells[4].text.strip()
                     credits = get_credits_2022_cs_5th(code)
                     gp = calculate_grade_point(marks)
+                    
                     if credits > 0:
                         total_credits += credits
                         total_gp += (credits * gp)
+                    
                     running_total_marks += int(marks)
+                    
                     data['subjects'].append({
                         'code': code,
                         'name': cells[1].text.strip(),
                         'total': marks,
                         'result': cells[5].text.strip()
                     })
-                except: continue
+                except: 
+                    continue
         
         data['total_marks'] = running_total_marks
+        
+        # Calculate SGPA
         if total_credits > 0:
             sgpa_val = total_gp / total_credits
             data['sgpa'] = "{:.2f}".format(sgpa_val)
             data['sgpa_float'] = float(sgpa_val)
-    except Exception as e: print(e)
+            
+    except Exception as e: 
+        print(f"❌ Parse Error: {e}")
+        
     return data
 
-if __name__ == "__main__":
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring"""
+    return jsonify({
+        'status': 'healthy',
+        'database_connected': db_connected,
+        'browser_initialized': driver is not None
+    })
+
+if __name__ == '__main__':
+    # Render uses the PORT environment variable
     port = int(os.environ.get('PORT', 5001))
-    app.run(host='0.0.0.0', port=port)
+    
+    print("=" * 60)
+    print("🚀 VTU Result App Starting...")
+    print(f"🌐 Port: {port}")
+    print(f"💾 Database: {'Connected' if db_connected else 'Not Connected'}")
+    print("=" * 60)
+    
+    app.run(host='0.0.0.0', port=port, debug=False)
