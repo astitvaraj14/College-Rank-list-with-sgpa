@@ -22,20 +22,22 @@ def leaderboard():
 
 @app.route("/submit_result", methods=["POST"])
 def submit_result():
-    data = request.json
-    usn = data["usn"]
+    data = request.get_json(force=True)
+    print("📥 RECEIVED DATA:", data)   # <-- ADD THIS
 
-    students_col.update_one({"usn":usn},{"$set":data},upsert=True)
+    if not data:
+        return jsonify({"status":"error","message":"No JSON received"})
 
-    my_total = data["total_marks"]
+    usn = data.get("usn")
 
-    uni_rank = students_col.count_documents({"total_marks":{"$gt":my_total}})+1
-    coll_rank = students_col.count_documents({
-        "total_marks":{"$gt":my_total},
-        "usn":{"$regex": f'^{usn[:3]}'}
-    })+1
+    students_col.update_one(
+        {"usn": usn},
+        {"$set": data},
+        upsert=True
+    )
 
-    return jsonify({"status":"success","uni_rank":uni_rank,"coll_rank":coll_rank})
+    return jsonify({"status":"success"})
+
 
 if __name__ == "__main__":
     app.run()
