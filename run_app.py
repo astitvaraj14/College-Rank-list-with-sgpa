@@ -1,24 +1,35 @@
 import os
+import time
+import tempfile
+import shutil
+import subprocess
 from flask import Flask, render_template, request, jsonify
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import time
+
+# --- 1. CLEANUP (Kill old browsers) ---
+print("🧹 Cleaning up old processes...")
+subprocess.run(["pkill", "-f", "Google Chrome"], check=False)
+subprocess.run(["pkill", "-f", "chromedriver"], check=False)
 
 app = Flask(__name__)
 app.secret_key = 'vtu_final_secret'
 
-# --- DATABASE ---
-# Uses Render's Environment Variable if available, otherwise Localhost
-MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://127.0.0.1:27017/')
-client = MongoClient(MONGO_URI)
-db = client['university_db']
-students_col = db['students']
+# --- 2. DATABASE CHECK ---
+try:
+    client = MongoClient('mongodb://127.0.0.1:27017/', serverSelectionTimeoutMS=2000)
+    client.server_info() # Trigger connection to check if running
+    db = client['university_db']
+    students_col = db['students']
+    print("✅ MongoDB is Connected!")
+except:
+    print("❌ MONGODB ERROR: Database is not running!")
+    print("👉 Run: brew services start mongodb-community")
 
 # --- BROWSER ---
 driver = None
@@ -26,26 +37,25 @@ driver = None
 def init_driver():
     global driver
     if driver is None:
+        print("🔵 Initializing Browser...")
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        
+        # INVISIBLE MODE SETTINGS
+        chrome_options.add_argument("--headless=new") 
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--remote-debugging-port=9222")
         
-        # --- SMART DRIVER SETUP ---
-        # Scenario 1: Running on Render (Docker) -> Use Chromium
-        if os.path.exists("/usr/bin/chromium"):
-            chrome_options.binary_location = "/usr/bin/chromium"
-            # We explicitly tell Selenium where the driver is
-            service = Service("/usr/bin/chromedriver")
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            print("Launched Chromium (Docker/Render Mode)")
-            
-        # Scenario 2: Running on Mac/Local -> Use Default
-        else:
-            driver = webdriver.Chrome(options=chrome_options)
-            print("Launched Chrome (Local Mode)")
+        # CRITICAL FIX: Allow Popups in Headless Mode
+        chrome_options.add_argument("--disable-popup-blocking")
+        
+        # Temp profile for stability
+        user_data_dir = tempfile.mkdtemp()
+        chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+        
+        driver = webdriver.Chrome(options=chrome_options)
+        print("✅ Browser Started")
 
 @app.route('/')
 def home():
@@ -55,26 +65,38 @@ def home():
 def get_captcha():
     global driver
     try:
-        init_driver()
-        if "results.vtu.ac.in" not in driver.current_url:
-             driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
-        else:
-             driver.refresh()
+        if driver is None: init_driver()
+
+        print("🔄 Loading VTU Page...")
+        try:
+            if "results.vtu.ac.in" not in driver.current_url:
+                 driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
+            else:
+                 driver.refresh()
+        except:
+            if driver: 
+                try: driver.quit()
+                except: pass
+            driver = None
+            init_driver()
+            driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
         
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 15)
         captcha_img = wait.until(EC.presence_of_element_located((By.XPATH, "//img[contains(@src, 'captcha')]")))
-        driver.execute_script("arguments[0].scrollIntoView();", captcha_img)
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", captcha_img)
+        time.sleep(1) 
+        
+        print("📸 Captcha Sent")
         return captcha_img.screenshot_as_png, 200, {'Content-Type': 'image/jpeg'}
+
     except Exception as e:
-        print(f"Browser Error: {e}")
-        # Force a restart of the driver on next try
+        print(f"❌ Captcha Error: {e}")
         if driver:
             try: driver.quit()
             except: pass
             driver = None
         return "Browser Error", 500
 
-# --- LEADERBOARD API ---
 @app.route('/leaderboard')
 def get_leaderboard():
     try:
@@ -89,22 +111,20 @@ def get_leaderboard():
 def fetch_result():
     usn = request.form['usn'].strip().upper()
     captcha_text = request.form['captcha'].strip()
-
     try:
-        if not driver:
-            init_driver()
-            if not driver:
-                return jsonify({'status': 'error', 'message': 'Session expired. Refresh page.'})
+        if not driver: init_driver()
 
+        # 1. Fill Form
         driver.find_element(By.NAME, "lns").clear()
         driver.find_element(By.NAME, "lns").send_keys(usn)
         driver.find_element(By.NAME, "captchacode").clear()
         driver.find_element(By.NAME, "captchacode").send_keys(captcha_text)
         
-        existing_windows = driver.window_handles
+        # 2. Click Submit
         driver.find_element(By.XPATH, "//input[@type='submit']").click()
         time.sleep(2)
 
+        # 3. Handle Alerts
         try:
             alert = driver.switch_to.alert
             txt = alert.text
@@ -113,13 +133,11 @@ def fetch_result():
             if "not available" in txt: return jsonify({'status': 'error', 'message': 'Result Not Found'})
         except: pass
 
-        new_windows = driver.window_handles
-        if len(new_windows) > len(existing_windows):
-            for w in new_windows:
-                if w not in existing_windows:
-                    driver.switch_to.window(w)
-                    break
+        # 4. Handle Popups (CRITICAL FIX)
+        if len(driver.window_handles) > 1:
+            driver.switch_to.window(driver.window_handles[-1])
 
+        # 5. Parse Data
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         student_data = parse_result_page(soup, usn)
         
@@ -134,6 +152,7 @@ def fetch_result():
                 'usn': {'$regex': f'^{coll_code}'}
             }) + 1
 
+            # Close popup
             if len(driver.window_handles) > 1:
                 driver.close()
                 driver.switch_to.window(driver.window_handles[0])
@@ -147,12 +166,12 @@ def fetch_result():
             return jsonify({'status': 'error', 'message': 'Parsing Failed'})
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Server Error Details: {e}") # CHECK TERMINAL FOR THIS
         return jsonify({'status': 'error', 'message': 'Server Error'})
 
 def get_credits_2022_cs_5th(sub_code):
     code = sub_code.upper().strip()
-    if "BCS501" in code: return 4  
+    if "BCS501" in code: return 3  
     if "BCS502" in code: return 4  
     if "BCS503" in code: return 4  
     if "BCSL504" in code: return 1 
@@ -203,11 +222,9 @@ def parse_result_page(soup, usn):
                     marks = cells[4].text.strip()
                     credits = get_credits_2022_cs_5th(code)
                     gp = calculate_grade_point(marks)
-                    
                     if credits > 0:
                         total_credits += credits
                         total_gp += (credits * gp)
-                    
                     running_total_marks += int(marks)
                     data['subjects'].append({
                         'code': code,
@@ -226,5 +243,4 @@ def parse_result_page(soup, usn):
     return data
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5001))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(debug=True, port=5001)
