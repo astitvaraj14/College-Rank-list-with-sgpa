@@ -55,6 +55,9 @@ def init_driver():
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--window-size=1920,1080")
         
+        # --- CRITICAL FIX: Allow Popups for Result Window ---
+        chrome_options.add_argument("--disable-popup-blocking")
+        
         # Ensures Selenium finds the Chromium binary on Render's Linux environment
         if os.environ.get('CHROME_BIN'):
             chrome_options.binary_location = os.environ.get('CHROME_BIN')
@@ -63,7 +66,7 @@ def init_driver():
         chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
         
         driver = webdriver.Chrome(options=chrome_options)
-        print("✅ Browser Initialized")
+        print("✅ Browser Initialized with Popups Allowed")
 
 # --- 4. ROUTES ---
 
@@ -118,12 +121,13 @@ def fetch_result():
             pass
 
         # 4. Handle Result Window (The popup with marks)
-        # Wait up to 10 seconds for the new window to open
+        # Wait up to 20 seconds for the new window to open (Increased from 10s)
         try:
-            WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > 1)
+            WebDriverWait(driver, 20).until(lambda d: len(d.window_handles) > 1)
             driver.switch_to.window(driver.window_handles[-1])
         except:
             # If no new window appeared and no alert, something else is wrong
+            print(f"DEBUG: Popup failed. Current URL: {driver.current_url}")
             return jsonify({'status': 'error', 'message': 'Result window did not open. Please try again.'})
 
         # 5. Parse Content
