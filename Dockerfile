@@ -26,4 +26,4 @@ ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 ENV PORT=10000
 
 # 6. Start the App
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000", "--timeout", "120"]
+CMD ["gunicorn", "run_app:app", "--bind", "0.0.0.0:10000", "--timeout", "120"]
