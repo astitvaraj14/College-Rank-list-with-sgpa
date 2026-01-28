@@ -13,23 +13,22 @@ students_col = db["students"]
 def home():
     return render_template("index.html")
 
-@app.route("/leaderboard")
+@app.route('/leaderboard')
 def leaderboard():
-    data = list(students_col.find({}, {"_id":0}).sort("total_marks",-1))
-    for i,s in enumerate(data):
-        s["rank"] = i+1
-    return jsonify(data)
+    if students_col is None:
+        connect_db()
 
-@app.route("/leaderboard")
-def leaderboard():
-    students = list(students_col.find({}, {"_id": 0}))
-    students.sort(key=lambda x: x.get("total_marks", 0), reverse=True)
+    students = list(students_col.find({}, {'_id': 0}))
+    students.sort(key=lambda x: x.get('total_marks', 0), reverse=True)
 
-    # add rank
     for i, s in enumerate(students):
-        s["rank"] = i + 1
+        s['rank'] = i + 1
 
-    return jsonify(students)
+    return jsonify({
+        "status": "success",
+        "data": students
+    })
+
 
 
 
