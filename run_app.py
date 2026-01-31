@@ -312,10 +312,13 @@ def parse_result_page(soup, usn):
             data['sgpa'] = "{:.2f}".format(sgpa_val)
             data['sgpa_float'] = float(sgpa_val)
             
-            # Formula: (SGPA - 0.75) * 10
-            perc = (sgpa_val - 0.75) * 10
-            if perc < 0: perc = 0
-            data['percentage'] = "{:.2f}%".format(perc)
+            # --- UPDATED PERCENTAGE LOGIC ---
+            # Formula: (Obtained Marks / 900) * 100
+            try:
+                perc = (running_total_marks / 900) * 100
+                data['percentage'] = "{:.2f}%".format(perc)
+            except:
+                data['percentage'] = "0.00%"
             
     except Exception as e: print(e)
     return data
