@@ -172,13 +172,13 @@ def get_analysis():
                 match = False
                 status_label = ""
                 
-                if class_type == 'fcd' and perc >= 70:
+                if class_type == 'fcd' and perc >= 70.00:
                     match = True; status_label = "Distinction"
-                elif class_type == 'fc' and 60 <= perc < 70:
+                elif class_type == 'fc' and 60.00 <= perc < 70.00:
                     match = True; status_label = "First Class"
-                elif class_type == 'sc' and 50 <= perc < 60:
+                elif class_type == 'sc' and 50.00 <= perc < 60.00:
                     match = True; status_label = "Second Class"
-                elif class_type == 'p' and 40 <= perc < 50: # Strict check to avoid overlap with SC
+                elif class_type == 'p' and 40.00 <= perc < 50.00: # Strict check to avoid overlap with SC
                     match = True; status_label = "Pass Class"
 
                 if match:
