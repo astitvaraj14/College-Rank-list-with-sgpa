@@ -33,7 +33,8 @@
         .badge-fc { background-color: #e0f2fe; color: #075985; border: 1px solid #0ea5e9; }
         .badge-sc { background-color: #ffedd5; color: #9a3412; border: 1px solid #f97316; }
         .badge-fail { background-color: #fee2e2; color: #991b1b; border: 1px solid #ef4444; }
-        .credit-footer { position: fixed; bottom: 10px; right: 15px; font-size: 0.85rem; color: rgba(255,255,255,0.9); background: rgba(255,255,255,0.1); padding: 8px 12px; border-radius: 8px; backdrop-filter: blur(5px); }
+        .credit-footer { position: fixed; bottom: 10px; right: 15px; font-size: 0.85rem; color: rgba(255,255,255,0.9); background: rgba(255,255,255,0.1); padding: 8px 12px; border-radius: 8px; backdrop-filter: blur(5px); z-index: 9999; }
+        .search-highlight { background-color: #fef08a !important; }
         @keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
@@ -123,6 +124,13 @@
         <div class="tab-pane fade" id="pills-leaderboard">
             <div class="card p-4">
                 <h3 class="text-center mb-4 text-warning"><i class="fas fa-crown"></i> Top Performers</h3>
+                
+                <div class="input-group mb-4">
+                    <span class="input-group-text bg-primary text-white"><i class="fas fa-search"></i></span>
+                    <input type="text" id="search-input" class="form-control form-control-lg" placeholder="Search by USN or Name..." onkeyup="searchLeaderboard()">
+                    <button class="btn btn-danger" onclick="clearSearch()"><i class="fas fa-times"></i> Clear</button>
+                </div>
+
                 <div class="table-responsive">
                     <table class="table table-hover text-center align-middle">
                         <thead class="table-dark">
@@ -273,16 +281,22 @@
     });
 
     // --- 3. LEADERBOARD ---
-    let sortField = 'total_marks'; let sortOrder = 'desc';
+    let sortField = 'total_marks'; 
+    let sortOrder = 'desc';
+    let allLeaderboardData = []; // Store all data for searching
+
     function toggleSort(field) {
         sortOrder = (sortField === field && sortOrder === 'desc') ? 'asc' : 'desc';
         sortField = field;
-        updateIcons(); fetchLeaderboard();
+        updateIcons(); 
+        fetchLeaderboard();
     }
+
     function updateIcons() {
         ['rank', 'total_marks', 'sgpa'].forEach(id => document.getElementById('icon-'+id).innerHTML = '');
         document.getElementById('icon-'+sortField).innerHTML = sortOrder === 'desc' ? '▼' : '▲';
     }
+
     async function fetchLeaderboard() {
         const tbody = document.getElementById('leaderboard-body');
         tbody.innerHTML = '<tr><td colspan="6">Loading...</td></tr>';
@@ -290,15 +304,56 @@
             const res = await fetch(`/leaderboard?sort=${sortField}&order=${sortOrder}`);
             const json = await res.json();
             if (json.status === 'success') {
-                let html = '';
-                json.data.forEach(s => {
-                    let cls = s.rank === 1 ? 'rank-1' : s.rank === 2 ? 'rank-2' : s.rank === 3 ? 'rank-3' : '';
-                    let icon = s.rank === 1 ? '🥇' : s.rank === 2 ? '🥈' : s.rank === 3 ? '🥉' : '';
-                    html += `<tr class="${cls}"><td>${icon} #${s.rank}</td><td>${s.usn}</td><td class="fw-bold">${s.name}</td><td class="text-primary fw-bold">${s.total_marks}</td><td class="text-success fw-bold">${s.sgpa}</td><td class="text-warning fw-bold">${s.percentage}</td></tr>`;
-                });
-                tbody.innerHTML = html;
+                allLeaderboardData = json.data; // Store for search
+                displayLeaderboard(allLeaderboardData);
             }
-        } catch (err) { tbody.innerHTML = '<tr><td colspan="6" class="text-danger">Failed to load</td></tr>'; }
+        } catch (err) { 
+            tbody.innerHTML = '<tr><td colspan="6" class="text-danger">Failed to load</td></tr>'; 
+        }
+    }
+
+    function displayLeaderboard(data) {
+        const tbody = document.getElementById('leaderboard-body');
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-muted">No results found</td></tr>';
+            return;
+        }
+
+        let html = '';
+        data.forEach(s => {
+            let cls = s.rank === 1 ? 'rank-1' : s.rank === 2 ? 'rank-2' : s.rank === 3 ? 'rank-3' : '';
+            let icon = s.rank === 1 ? '🥇' : s.rank === 2 ? '🥈' : s.rank === 3 ? '🥉' : '';
+            html += `<tr class="${cls}">
+                <td>${icon} #${s.rank}</td>
+                <td class="fw-bold">${s.usn}</td>
+                <td class="fw-bold">${s.name}</td>
+                <td class="text-primary fw-bold">${s.total_marks}</td>
+                <td class="text-success fw-bold">${s.sgpa}</td>
+                <td class="text-warning fw-bold">${s.percentage}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+
+    function searchLeaderboard() {
+        const searchTerm = document.getElementById('search-input').value.toLowerCase().trim();
+        
+        if (searchTerm === '') {
+            displayLeaderboard(allLeaderboardData);
+            return;
+        }
+
+        const filtered = allLeaderboardData.filter(student => {
+            return student.usn.toLowerCase().includes(searchTerm) || 
+                   student.name.toLowerCase().includes(searchTerm);
+        });
+
+        displayLeaderboard(filtered);
+    }
+
+    function clearSearch() {
+        document.getElementById('search-input').value = '';
+        displayLeaderboard(allLeaderboardData);
     }
 
     // --- 4. ANALYSIS (Unified) ---
@@ -326,7 +381,7 @@
                     let html = '';
                     json.data.forEach(s => {
                         let statusColor = (s.status === 'FAIL') ? 'text-danger fw-bold' : 'text-primary fw-bold';
-                        html += `<tr><td>${s.usn}</td><td>${s.name}</td><td class="fw-bold">${s.marks}</td><td class="${statusColor}">${s.status}</td></tr>`;
+                        html += `<tr><td class="fw-bold">${s.usn}</td><td>${s.name}</td><td class="fw-bold">${s.marks}</td><td class="${statusColor}">${s.status}</td></tr>`;
                     });
                     tbody.innerHTML = html;
                 } else {

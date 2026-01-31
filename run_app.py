@@ -137,7 +137,7 @@ def get_leaderboard():
         elif sort_by == 'rank':
             all_students.sort(key=lambda x: x.get('rank', 9999), reverse=not reverse_order)
 
-        return jsonify({'status': 'success', 'data': all_students[:100]})
+        return jsonify({'status': 'success', 'data': all_students})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
@@ -182,6 +182,9 @@ def get_analysis():
                         'marks': f"{perc:.2f}%", 'status': status_label
                     })
             
+            # Sort by USN
+            result_list.sort(key=lambda x: x['usn'])
+            
             stats['total'] = len(result_list)
             stats['pass'] = len(result_list)
             stats['fail'] = 0
@@ -203,6 +206,10 @@ def get_analysis():
                             'usn': s['usn'], 'name': s['name'],
                             'marks': subject_data['total'], 'status': subject_data['result']
                         })
+            
+            # Sort by USN
+            result_list.sort(key=lambda x: x['usn'])
+            
         else:
             # --- OVERALL FAILURES ---
             students = list(students_col.find({}, {'_id': 0, 'usn': 1, 'name': 1, 'subjects': 1}))
@@ -224,6 +231,9 @@ def get_analysis():
                     })
                 else:
                     stats['pass'] += 1
+            
+            # Sort by USN
+            result_list.sort(key=lambda x: x['usn'])
 
         return jsonify({'status': 'success', 'stats': stats, 'data': result_list})
     
