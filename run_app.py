@@ -141,42 +141,68 @@ def get_leaderboard():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
-@app.route('/failures')
-def get_failures():
-    """Get list of students who failed a specific subject"""
+# --- NEW ANALYSIS ROUTE ---
+@app.route('/analysis')
+def get_analysis():
     global students_col, db_connected
     if not db_connected: connect_db()
     
     subject_code = request.args.get('subject')
-    if not subject_code:
-        return jsonify({'status': 'error', 'message': 'Subject code required'})
+    
+    stats = {'total': 0, 'pass': 0, 'fail': 0}
+    failed_list = []
 
     try:
-        # Query: Find students where subjects array has an element matching code AND result != 'P'
-        query = {
-            "subjects": {
-                "$elemMatch": {
-                    "code": subject_code,
-                    "result": {"$ne": "P"} 
-                }
-            }
-        }
-        
-        failed_students = list(students_col.find(query, {'_id': 0, 'usn': 1, 'name': 1, 'subjects': 1}))
-        
-        cleaned_data = []
-        for s in failed_students:
-            # Extract marks for the specific subject
-            subject_details = next((sub for sub in s['subjects'] if sub['code'] == subject_code), None)
-            if subject_details:
-                cleaned_data.append({
-                    'usn': s['usn'],
-                    'name': s['name'],
-                    'marks': subject_details['total'],
-                    'status': subject_details['result']
-                })
+        if subject_code and subject_code != 'overall':
+            # --- SPECIFIC SUBJECT LOGIC ---
+            # Find students who have this subject in their list
+            query = {"subjects.code": subject_code}
+            students = list(students_col.find(query, {'_id': 0, 'usn': 1, 'name': 1, 'subjects': 1}))
+            
+            stats['total'] = len(students)
+            
+            for s in students:
+                # Find the specific subject entry
+                subject_data = next((sub for sub in s['subjects'] if sub['code'] == subject_code), None)
+                
+                if subject_data:
+                    if subject_data['result'] == 'P':
+                        stats['pass'] += 1
+                    else:
+                        stats['fail'] += 1
+                        failed_list.append({
+                            'usn': s['usn'],
+                            'name': s['name'],
+                            'marks': subject_data['total'],
+                            'status': subject_data['result']
+                        })
+        else:
+            # --- OVERALL LOGIC ---
+            # Fail = Failed in AT LEAST ONE subject
+            students = list(students_col.find({}, {'_id': 0, 'usn': 1, 'name': 1, 'subjects': 1}))
+            stats['total'] = len(students)
+            
+            for s in students:
+                has_failed = False
+                failed_subjects = []
+                
+                for sub in s['subjects']:
+                    if sub['result'] != 'P':
+                        has_failed = True
+                        failed_subjects.append(f"{sub['code']} ({sub['total']})")
+                
+                if has_failed:
+                    stats['fail'] += 1
+                    failed_list.append({
+                        'usn': s['usn'],
+                        'name': s['name'],
+                        'marks': ', '.join(failed_subjects), # Show which subjects they failed
+                        'status': 'FAIL'
+                    })
+                else:
+                    stats['pass'] += 1
 
-        return jsonify({'status': 'success', 'data': cleaned_data, 'count': len(cleaned_data)})
+        return jsonify({'status': 'success', 'stats': stats, 'data': failed_list})
     
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
@@ -201,18 +227,13 @@ def fetch_result():
             driver.get("https://results.vtu.ac.in/D25J26Ecbcs/index.php")
         
         wait = WebDriverWait(driver, 15)
-        
-        # Fill Form
         wait.until(EC.presence_of_element_located((By.NAME, "lns"))).send_keys(usn)
         wait.until(EC.presence_of_element_located((By.NAME, "captchacode"))).send_keys(captcha_text)
         
-        # Click Submit
         submit_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='submit']")))
         driver.execute_script("arguments[0].click();", submit_btn)
         
         time.sleep(2)
-        
-        # Check for Alerts
         try:
             WebDriverWait(driver, 3).until(EC.alert_is_present())
             alert = driver.switch_to.alert
@@ -221,7 +242,6 @@ def fetch_result():
             return jsonify({'status': 'error', 'message': f"VTU Says: {txt}"})
         except: pass
 
-        # Handle Popup Window
         result_found = False
         try:
             for i in range(10):
@@ -233,14 +253,12 @@ def fetch_result():
         except: pass
         
         if not result_found:
-            # Fallback: Check current window
             soup_check = BeautifulSoup(driver.page_source, 'html.parser')
             if "Student Name" in soup_check.get_text():
                 result_found = True
             else:
                 return jsonify({'status': 'error', 'message': 'Result Window did not open. Reload Captcha.'})
 
-        # Parse Result
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         student_data = parse_result_page(soup, usn)
         
@@ -298,7 +316,6 @@ def parse_result_page(soup, usn):
         all_text = list(soup.stripped_strings)
         for i, text in enumerate(all_text):
             if "Student Name" in text:
-                # Logic to find name based on position relative to label
                 if i+2 < len(all_text) and len(all_text[i+2]) > 2 and ":" not in all_text[i+2]:
                     data['name'] = all_text[i+2].strip()
                     break
@@ -353,5 +370,4 @@ def health_check():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
-    print(f"🚀 Starting on Port {port}")
     app.run(host='0.0.0.0', port=port)

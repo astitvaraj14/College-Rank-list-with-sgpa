@@ -19,6 +19,7 @@
         .bg-marks { background: linear-gradient(135deg, #3b82f6, #2563eb); }
         .bg-rank { background: linear-gradient(135deg, #f59e0b, #d97706); }
         .bg-fail { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+        .bg-info { background: linear-gradient(135deg, #0ea5e9, #0284c7); }
         .stat-value { font-size: 2.5rem; font-weight: 800; line-height: 1; }
         th.sortable { cursor: pointer; user-select: none; }
         th.sortable:hover { background-color: rgba(255,255,255,0.1); }
@@ -50,8 +51,8 @@
             </button>
         </li>
         <li class="nav-item">
-            <button class="nav-link bg-white text-danger fw-bold" data-bs-toggle="pill" data-bs-target="#pills-failures">
-                <i class="fas fa-chart-pie"></i> Subject Analysis
+            <button class="nav-link bg-white text-danger fw-bold" data-bs-toggle="pill" data-bs-target="#pills-failures" onclick="fetchAnalysis()">
+                <i class="fas fa-chart-pie"></i> Analysis
             </button>
         </li>
     </ul>
@@ -135,37 +136,46 @@
             <div class="row justify-content-center">
                 <div class="col-md-8">
                     <div class="card p-4">
-                        <h3 class="text-center mb-4 text-danger"><i class="fas fa-user-times"></i> Subject Analysis</h3>
+                        <h3 class="text-center mb-4 text-danger"><i class="fas fa-chart-bar"></i> Performance Analysis</h3>
                         
                         <div class="input-group mb-4">
-                            <select id="subject-select" class="form-select form-select-lg">
-                                <option value="" selected disabled>Select Subject to Analyze</option>
+                            <select id="subject-select" class="form-select form-select-lg" onchange="fetchAnalysis()">
+                                <option value="overall" selected>Overall Performance (All Subjects)</option>
                                 <option value="BCS501">BCS501 - Software Engineering</option>
                                 <option value="BCS502">BCS502 - Computer Networks</option>
                                 <option value="BCS503">BCS503 - Theory of Computation</option>
                                 <option value="BCSL504">BCSL504 - Web Technology Lab</option>
                                 <option value="BCS515B">BCS515B - Artificial Intelligence</option>
                                 <option value="BCS586">BCS586 - Mini Project</option>
-                                <option value="BRMK557">BRMK557 - Research Methodology & IPR</option>
+                                <option value="BRMK557">BRMK557 - Research Methodology</option>
                                 <option value="BCS508">BCS508 - Environmental Studies and E-Waste Management</option>
                             </select>
-                            <button class="btn btn-danger px-4" onclick="fetchFailures()">Check</button>
+                            <button class="btn btn-danger px-4" onclick="fetchAnalysis()">Analyze</button>
                         </div>
 
-                        <div id="failure-stats" class="text-center mb-4" style="display:none;">
-                            <div class="stat-box bg-fail d-inline-block px-5">
-                                <div>Total Failed Students</div>
-                                <div class="stat-value" id="fail-count">0</div>
+                        <div class="stats-container" id="analysis-stats">
+                            <div class="stat-box bg-info">
+                                <div>Total Checked</div>
+                                <div class="stat-value" id="stats-total">0</div>
+                            </div>
+                            <div class="stat-box bg-sgpa">
+                                <div>Passed</div>
+                                <div class="stat-value" id="stats-pass">0</div>
+                            </div>
+                            <div class="stat-box bg-fail">
+                                <div>Failed</div>
+                                <div class="stat-value" id="stats-fail">0</div>
                             </div>
                         </div>
 
-                        <div class="table-responsive">
+                        <div class="table-responsive mt-3">
+                            <h5 class="text-danger fw-bold"><i class="fas fa-list"></i> List of Failed Students</h5>
                             <table class="table table-hover text-center align-middle border">
                                 <thead class="table-danger">
-                                    <tr><th>USN</th><th>Name</th><th>Marks Obtained</th><th>Result</th></tr>
+                                    <tr><th>USN</th><th>Name</th><th>Marks / Failed Subs</th><th>Status</th></tr>
                                 </thead>
                                 <tbody id="failures-body">
-                                    <tr><td colspan="4" class="text-muted py-4">Select a subject to view failure list.</td></tr>
+                                    <tr><td colspan="4" class="text-muted py-4">Select options to load data.</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -262,33 +272,35 @@
         } catch (err) { tbody.innerHTML = '<tr><td colspan="6" class="text-danger">Failed to load</td></tr>'; }
     }
 
-    // --- 4. FAILURES ---
-    async function fetchFailures() {
+    // --- 4. ANALYSIS ---
+    async function fetchAnalysis() {
         const subject = document.getElementById('subject-select').value;
         const tbody = document.getElementById('failures-body');
-        const statBox = document.getElementById('failure-stats');
         
-        if (!subject) { alert("Please select a subject!"); return; }
-        
-        tbody.innerHTML = '<tr><td colspan="4">Searching database...</td></tr>';
-        statBox.style.display = 'none';
+        document.getElementById('stats-total').innerText = '-';
+        document.getElementById('stats-pass').innerText = '-';
+        document.getElementById('stats-fail').innerText = '-';
+        tbody.innerHTML = '<tr><td colspan="4">Loading data...</td></tr>';
 
         try {
-            const res = await fetch(`/failures?subject=${subject}`);
+            const res = await fetch(`/analysis?subject=${subject}`);
             const json = await res.json();
             
             if (json.status === 'success') {
-                document.getElementById('fail-count').innerText = json.count;
-                statBox.style.display = 'block';
+                // Update Stats
+                document.getElementById('stats-total').innerText = json.stats.total;
+                document.getElementById('stats-pass').innerText = json.stats.pass;
+                document.getElementById('stats-fail').innerText = json.stats.fail;
                 
-                if (json.count > 0) {
+                // Update Table
+                if (json.data.length > 0) {
                     let html = '';
                     json.data.forEach(s => {
                         html += `<tr><td>${s.usn}</td><td>${s.name}</td><td class="fw-bold">${s.marks}</td><td class="text-danger fw-bold">${s.status}</td></tr>`;
                     });
                     tbody.innerHTML = html;
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="4" class="text-success fw-bold py-4"><i class="fas fa-check-circle"></i> No failures found in this subject! 🎉</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="4" class="text-success fw-bold py-4"><i class="fas fa-check-circle"></i> No failures found! 🎉</td></tr>';
                 }
             } else {
                 tbody.innerHTML = `<tr><td colspan="4" class="text-danger">${json.message}</td></tr>`;
